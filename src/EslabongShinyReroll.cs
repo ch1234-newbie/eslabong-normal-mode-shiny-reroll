@@ -65,6 +65,7 @@ internal static class EslabongShinyReroll
     [DllImport("user32.dll")] private static extern bool GetClientRect(IntPtr hWnd, out Rect rect);
     [DllImport("user32.dll")] private static extern bool ClientToScreen(IntPtr hWnd, ref Point point);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
@@ -339,6 +340,16 @@ internal static class EslabongShinyReroll
             form.Controls.Add(label);
             form.Controls.Add(button);
             form.AcceptButton = button;
+            form.Shown += delegate
+            {
+                // 전체 화면 게임이 직전에 전면 창이었더라도 결과창을 최상단에 고정하고
+                // 키보드 포커스까지 결과창으로 가져온다.
+                form.TopMost = true;
+                SetWindowPos(form.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
+                form.BringToFront();
+                form.Activate();
+                SetForegroundWindow(form.Handle);
+            };
             form.ShowDialog();
         }
     }
@@ -884,8 +895,14 @@ $result.Text
             if (overlapsWideCharacter && (aspect < 0.70 || aspect > 1.45)) continue;
             // 암흑기사 방패는 애니메이션에 따라 본체와 붙기도, 작은 틈을 두고 떨어지기도 한다.
             // 위치와 무관하게 한 픽셀 색이 아닌 후보 도형 전체의 밝은 색상 비율을 검사한다.
-            if (brightColorFraction < 0.08) continue;
-            if (areaRatio < 0.045 || areaRatio > 2.50) continue;
+            // 정상 표식의 밝은 색 비율은 확인된 번개형 25.4%, 태양형 44.4%,
+            // 보석형 56.5%였다. 분리된 고블린 머리카락(18.4%)과 주술사 머리
+            // 조각(19.8%)을 제외하되 가장 어두운 정상 번개형에는 여유를 둔다.
+            if (brightColorFraction < 0.22) continue;
+            // 샤이니 표식은 확인된 정상 사례에서 본체 면적의 약 7~9%였다.
+            // 고블린 암살자의 분리된 머리카락은 작은 몸통 조각의 58%로 잡혔으므로,
+            // 색상이나 도형 종류를 제한하지 않고 상대 면적이 지나치게 큰 후보만 제외한다.
+            if (areaRatio < 0.045 || areaRatio > 0.38) continue;
 
             double compactness = b.Area / (double)(b.Width * b.Height);
             double score = 1.0;
