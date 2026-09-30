@@ -37,7 +37,7 @@ Eslabong의 아레나 클랜 창단 화면에서 용병 3명을 빠르게 다시
 
 ## 생성되는 폴더
 
-v22 배포판은 매 리롤 화면을 저장하지 않습니다.
+v23 배포판은 매 리롤 화면을 저장하지 않습니다.
 
 - `found`: 확정된 샤이니 전체 화면
 - `rejected_candidates`: 후속 프레임 검사에서 제외된 순간 후보
@@ -46,7 +46,7 @@ v22 배포판은 매 리롤 화면을 저장하지 않습니다.
 ## 주의 사항
 
 - 샤이니 확률과 게임 로딩 상황에 따라 장시간 실행될 수 있습니다.
-- FAST 모드는 슬롯 변화를 확인한 뒤 최대 0.4초만 기다립니다. 매우 늦게 로드되는 캐릭터는 놓칠 가능성이 있습니다.
+- TURBO 모드는 세 슬롯 변화와 밝은 직업명을 연속 확인하면 0.15초 이후 다음 리롤로 진행합니다. 매우 늦게 로드되는 캐릭터는 놓칠 가능성이 있습니다.
 - 직업명 표시는 Windows의 로컬 한글 OCR을 사용합니다. OCR에 실패하면 직업명 대신 슬롯 번호가 표시됩니다.
 - 직업명 인식 시 Windows PowerShell을 로컬에서 호출하지만 인터넷으로 화면이나 정보를 전송하지 않습니다.
 - 서명되지 않은 개인 제작 EXE이므로 Windows SmartScreen이나 백신이 경고할 수 있습니다. 불안하다면 공개된 소스를 직접 확인하고 빌드하세요.
@@ -58,7 +58,7 @@ v22 배포판은 매 리롤 화면을 저장하지 않습니다.
 .NET Framework에 포함된 C# 컴파일러를 사용할 수 있습니다.
 
 ```powershell
-C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /unsafe /optimize+ /target:exe /out:EslabongShinyReroll_v22_FAST.exe /r:System.Drawing.dll /r:System.Windows.Forms.dll src\EslabongShinyReroll.cs
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /unsafe /optimize+ /target:exe /out:EslabongShinyReroll_v23_TURBO.exe /r:System.Drawing.dll /r:System.Windows.Forms.dll src\EslabongShinyReroll.cs
 ```
 
 ## 검증 범위
@@ -66,5 +66,6 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /unsafe /optimize+ /targ
 - 실제 사용: QHD 및 4K 16:9
 - 축소 화면 검사: FHD 16:9
 - 샤이니 예시: 태양형 및 번개형
+- 실제 100회 연속 리롤 검사: 약 4.9회/초, 마지막 12회 모두 세 캐릭터와 직업명 로드 확인
 
 오탐이나 미탐을 발견하면 F10을 누른 뒤 `debug_recent` 폴더의 관련 화면과 함께 Issue로 알려주세요.

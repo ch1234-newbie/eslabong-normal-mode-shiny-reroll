@@ -125,12 +125,12 @@ internal static class EslabongShinyReroll
             return DiagnoseLive();
 
         Console.OutputEncoding = System.Text.Encoding.UTF8;
-        Console.Title = "Eslabong 샤이니 리롤 v22 FAST";
-        Console.WriteLine("Eslabong 샤이니 리롤 매크로 v22 FAST");
+        Console.Title = "Eslabong 샤이니 리롤 v23 TURBO";
+        Console.WriteLine("Eslabong 샤이니 리롤 매크로 v23 TURBO");
         Console.WriteLine("F8 시작 | F10 즉시 중지 | F11 종료");
         Console.WriteLine("게임을 16:9 캐릭터 선택 화면에 두고 F8을 누르세요. 1440p/4K는 자동 보정됩니다.");
         Console.WriteLine("게임 창이 전면이 아니면 자동으로 안전 중지합니다.\n");
-        Console.WriteLine("FAST 모드: 슬롯 변화 후 최대 0.4초만 기다립니다. 늦은 로딩을 놓칠 위험이 있습니다.\n");
+        Console.WriteLine("TURBO 모드: 세 슬롯 변화와 밝은 직업명을 연속 확인하면 0.15초 이후 진행합니다.\n");
 
         bool registeredStart = RegisterHotKey(IntPtr.Zero, HotkeyStart, 0, VkF8);
         bool registeredStop = RegisterHotKey(IntPtr.Zero, HotkeyStop, 0, VkF10);
@@ -230,7 +230,7 @@ internal static class EslabongShinyReroll
                     byte[][] previousSlots = SplitThree(MakeScreenSignatureFromRegion(secondFrame.Image, secondFrame.ClientWidth, secondFrame.ClientHeight, secondFrame.Roi.X, secondFrame.Roi.Y));
                     byte[][] previousNames = SplitThree(MakeNameSignatureFromRegion(secondFrame.Image, secondFrame.ClientWidth, secondFrame.ClientHeight, secondFrame.Roi.X, secondFrame.Roi.Y));
                     keybd_event((byte)VkR, 0, 0, UIntPtr.Zero);
-                    Thread.Sleep(18);
+                    Thread.Sleep(14);
                     keybd_event((byte)VkR, 0, KeyUp, UIntPtr.Zero);
                     rolls++;
                     pendingFrame = WaitForChangedFrame(hwnd, previousSlots, previousNames, 2500);
@@ -462,10 +462,11 @@ $result.Text
         bool[] sawLoading = { false, false, false };
         double[] maxSlotChange = { 0, 0, 0 };
         double[] maxNameChange = { 0, 0, 0 };
+        int readyStreak = 0;
         DateTime waitStarted = DateTime.UtcNow;
         while (running && DateTime.UtcNow < deadline)
         {
-            Thread.Sleep(8);
+            Thread.Sleep(6);
             int clientWidth, clientHeight;
             Rectangle pollingRoi;
             Bitmap frame = CapturePollingFrame(hwnd, out clientWidth, out clientHeight, out pollingRoi);
@@ -488,11 +489,12 @@ $result.Text
                 if (!transitioned) allTransitioned = false;
             }
             double waitedMs = (DateTime.UtcNow - waitStarted).TotalMilliseconds;
-            // FAST: 세 슬롯 변화가 확인되고 이름까지 밝으면 0.25초 이후 즉시 진행한다.
-            // 이름이 아직 어두워도 0.4초가 지나면 두 프레임 샤이니 검사로 넘어간다.
-            bool fastReady = allTransitioned &&
-                ((allNamesReady && waitedMs >= 250) || waitedMs >= 400);
-            if (fastReady)
+            // TURBO: 세 슬롯 변화와 완성된 직업명이 연속 두 프레임 확인되면
+            // 0.15초 이후 즉시 진행한다. 늦은 로딩은 기존처럼 0.4초까지 기다린다.
+            if (allTransitioned && allNamesReady && waitedMs >= 150) readyStreak++;
+            else readyStreak = 0;
+            bool turboReady = readyStreak >= 2 || (allTransitioned && waitedMs >= 400);
+            if (turboReady)
             {
                 if (latest != null) latest.Dispose();
                 return new FrameSample { Image = frame, ClientWidth = clientWidth, ClientHeight = clientHeight, Roi = pollingRoi };
