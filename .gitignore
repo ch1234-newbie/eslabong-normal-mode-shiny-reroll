@@ -1,0 +1,7 @@
+found/
+rejected_candidates/
+debug_recent/
+checks/
+*.pdb
+*.user
+*.suo
