@@ -893,12 +893,13 @@ $result.Text
             bool overlapsWideCharacter = gapX < normalGap;
             double brightColorFraction = BrightColorFraction(image, b);
             if (overlapsWideCharacter && (aspect < 0.70 || aspect > 1.45)) continue;
+            // 실제 보라 방패형 표식은 밝은 색 비율이 20.2%로 낮지만 본체와 6px
+            // 분리되어 있다. 주술사 머리 조각은 19.8%이고 본체 안쪽으로 겹친다.
+            // 따라서 어두운 표식 전체를 버리지 않고, 본체와 겹치는 후보만 더 밝게 요구한다.
+            if (overlapsWideCharacter && brightColorFraction < 0.22) continue;
             // 암흑기사 방패는 애니메이션에 따라 본체와 붙기도, 작은 틈을 두고 떨어지기도 한다.
             // 위치와 무관하게 한 픽셀 색이 아닌 후보 도형 전체의 밝은 색상 비율을 검사한다.
-            // 정상 표식의 밝은 색 비율은 확인된 번개형 25.4%, 태양형 44.4%,
-            // 보석형 56.5%였다. 분리된 고블린 머리카락(18.4%)과 주술사 머리
-            // 조각(19.8%)을 제외하되 가장 어두운 정상 번개형에는 여유를 둔다.
-            if (brightColorFraction < 0.22) continue;
+            if (brightColorFraction < 0.08) continue;
             // 샤이니 표식은 확인된 정상 사례에서 본체 면적의 약 7~9%였다.
             // 고블린 암살자의 분리된 머리카락은 작은 몸통 조각의 58%로 잡혔으므로,
             // 색상이나 도형 종류를 제한하지 않고 상대 면적이 지나치게 큰 후보만 제외한다.
