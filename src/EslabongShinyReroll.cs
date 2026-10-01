@@ -22,12 +22,35 @@ internal static class EslabongShinyReroll
     private const uint VkF10 = 0x79;
     private const uint VkF11 = 0x7A;
     private const uint VkR = 0x52;
+    private const uint VkLeft = 0x25;
+    private const uint VkRight = 0x27;
     private const uint KeyUp = 0x0002;
     private static volatile bool running;
     private static volatile bool exiting;
     private static Thread worker;
+    private static int alertPlaying;
     private static readonly object RecentLock = new object();
     private static readonly Queue<RecentFrame> RecentFrames = new Queue<RecentFrame>();
+    private enum GameMode { Normal, Champion }
+    private enum ChampionRerollMode { FixedChampion, RotateChampions }
+    private enum ChampionStopMode { FirstFound, CompleteSelected }
+    private sealed class RunOptions
+    {
+        public GameMode Mode = GameMode.Normal;
+        public ChampionRerollMode ChampionMode = ChampionRerollMode.FixedChampion;
+        public ChampionStopMode StopMode = ChampionStopMode.FirstFound;
+        public bool SearchChampion = true;
+        public bool SearchMercenaries = true;
+    }
+    private sealed class FoundResult
+    {
+        public int Slot;
+        public string JobName;
+        public string FoundPath;
+        public int Rolls;
+        public TimeSpan Elapsed;
+    }
+    private static RunOptions Options = new RunOptions();
 
     private sealed class RecentFrame
     {
@@ -91,6 +114,7 @@ internal static class EslabongShinyReroll
         public string Reason;
     }
 
+    [STAThread]
     public static int Main(string[] args)
     {
         // 4K + Windows 150% 배율에서도 캡처 좌표와 실제 화면 픽셀을 일치시킨다.
@@ -104,6 +128,8 @@ internal static class EslabongShinyReroll
             return AnalyzeFile(args[1]);
         if (args.Length == 2 && args[0].Equals("--analyze-screen", StringComparison.OrdinalIgnoreCase))
             return AnalyzeScreenFile(args[1]);
+        if (args.Length == 6 && args[0].Equals("--analyze-region", StringComparison.OrdinalIgnoreCase))
+            return AnalyzeRegionFile(args[1], int.Parse(args[2]), int.Parse(args[3]), int.Parse(args[4]), int.Parse(args[5]));
         if (args.Length == 3 && args[0].Equals("--ocr", StringComparison.OrdinalIgnoreCase))
         {
             Console.OutputEncoding = Encoding.UTF8;
@@ -122,16 +148,38 @@ internal static class EslabongShinyReroll
                 ShowFoundPopup("도적", testSlot, 317, TimeSpan.FromSeconds(104), preview);
             return 0;
         }
+        if (args.Length == 5 && args[0].Equals("--combined-popup-test", StringComparison.OrdinalIgnoreCase))
+        {
+            FoundResult championTest = new FoundResult { Slot = int.Parse(args[2]), JobName = "잠꾸러기 거인", FoundPath = args[1], Rolls = 2341, Elapsed = TimeSpan.FromMinutes(16.5) };
+            FoundResult mercenaryTest = new FoundResult { Slot = int.Parse(args[4]), JobName = "크루세이더", FoundPath = args[3], Rolls = 5176, Elapsed = TimeSpan.FromMinutes(37.75) };
+            using (Bitmap championPreview = CreateSlotPreview(championTest.FoundPath, championTest.Slot))
+            using (Bitmap mercenaryPreview = CreateSlotPreview(mercenaryTest.FoundPath, mercenaryTest.Slot))
+                ShowCombinedFoundPopup(championTest, mercenaryTest, 7517, TimeSpan.FromMinutes(37.75), championPreview, mercenaryPreview);
+            return 0;
+        }
         if (args.Length == 1 && args[0].Equals("--diagnose-live", StringComparison.OrdinalIgnoreCase))
             return DiagnoseLive();
 
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        if (!ShowConfigurationDialog()) return 0;
+
         Console.OutputEncoding = System.Text.Encoding.UTF8;
-        Console.Title = "Eslabong 샤이니 리롤 v23 TURBO";
-        Console.WriteLine("Eslabong 샤이니 리롤 매크로 v23 TURBO");
+        string modeName = Options.Mode == GameMode.Normal ? "일반 모드" : "챔피언 모드";
+        Console.Title = "Eslabong 샤이니 리롤 v24 MULTI MODE - " + modeName;
+        Console.WriteLine("Eslabong 샤이니 리롤 매크로 v24 MULTI MODE");
+        Console.WriteLine("선택 모드: " + modeName);
         Console.WriteLine("F8 시작 | F10 즉시 중지 | F11 종료");
         Console.WriteLine("게임을 16:9 캐릭터 선택 화면에 두고 F8을 누르세요. 1440p/4K는 자동 보정됩니다.");
         Console.WriteLine("게임 창이 전면이 아니면 자동으로 안전 중지합니다.\n");
-        Console.WriteLine("TURBO 모드: 세 슬롯 변화와 밝은 직업명을 연속 확인하면 0.15초 이후 진행합니다.\n");
+        if (Options.Mode == GameMode.Normal)
+            Console.WriteLine("TURBO 모드: 바뀌는 슬롯 수에 맞춘 대기 시간으로 밝은 직업명을 확인한 뒤 진행합니다.\n");
+        else
+        {
+            Console.WriteLine("챔피언 탐색: {0} | 일반 용병 탐색: {1}", Options.SearchChampion ? "켜짐" : "꺼짐", Options.SearchMercenaries ? "켜짐" : "꺼짐");
+            Console.WriteLine("챔피언 방식: {0}", Options.ChampionMode == ChampionRerollMode.FixedChampion ? "좌우 왕복으로 현재 챔피언 유지" : "오른쪽으로 전체 챔피언 순환");
+            Console.WriteLine("종료 방식: {0}\n", Options.StopMode == ChampionStopMode.FirstFound ? "챔피언 또는 일반 용병 중 하나 발견 시 전체 종료" : "발견된 쪽만 고정하고 선택한 대상을 모두 찾을 때까지 계속");
+        }
 
         bool registeredStart = RegisterHotKey(IntPtr.Zero, HotkeyStart, 0, VkF8);
         bool registeredStop = RegisterHotKey(IntPtr.Zero, HotkeyStop, 0, VkF10);
@@ -173,6 +221,222 @@ internal static class EslabongShinyReroll
         return 0;
     }
 
+    private static bool ShowConfigurationDialog()
+    {
+        using (Form form = new Form())
+        using (RadioButton normal = new RadioButton())
+        using (RadioButton champion = new RadioButton())
+        using (GroupBox championGroup = new GroupBox())
+        using (GroupBox cycleGroup = new GroupBox())
+        using (GroupBox stopGroup = new GroupBox())
+        using (CheckBox searchA = new CheckBox())
+        using (CheckBox searchB = new CheckBox())
+        using (RadioButton fixedChampion = new RadioButton())
+        using (RadioButton rotateChampions = new RadioButton())
+        using (RadioButton stopFirst = new RadioButton())
+        using (RadioButton stopAll = new RadioButton())
+        using (Label expectedTime = new Label())
+        using (Button start = new Button())
+        using (Button cancel = new Button())
+        {
+            form.Text = "Eslabong 샤이니 리롤 설정";
+            form.ClientSize = new Size(900, 745);
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.MaximizeBox = false;
+            form.MinimizeBox = false;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            form.TopMost = true;
+            form.AutoScaleMode = AutoScaleMode.None;
+
+            Label title = new Label();
+            title.Text = "게임 모드를 선택하세요";
+            title.Font = new Font("맑은 고딕", 17F, FontStyle.Bold);
+            title.TextAlign = ContentAlignment.MiddleCenter;
+            title.SetBounds(40, 20, 820, 50);
+
+            normal.Text = "일반 모드";
+            normal.Font = new Font("맑은 고딕", 12F, FontStyle.Bold);
+            normal.SetBounds(225, 85, 190, 35);
+            normal.Checked = true;
+
+            champion.Text = "챔피언 모드";
+            champion.Font = new Font("맑은 고딕", 12F, FontStyle.Bold);
+            champion.SetBounds(515, 85, 210, 35);
+
+            championGroup.Text = "챔피언 모드 세부 설정";
+            championGroup.Font = new Font("맑은 고딕", 10.5F, FontStyle.Bold);
+            championGroup.SetBounds(45, 135, 810, 420);
+            championGroup.Enabled = false;
+
+            searchA.Text = "챔피언 탐색 (1번 슬롯)";
+            searchA.Font = new Font("맑은 고딕", 10F, FontStyle.Regular);
+            searchA.SetBounds(25, 35, 340, 32);
+            searchA.Checked = true;
+            searchB.Text = "일반 용병 탐색 (2·3번 슬롯)";
+            searchB.Font = new Font("맑은 고딕", 10F, FontStyle.Regular);
+            searchB.SetBounds(410, 35, 360, 32);
+            searchB.Checked = true;
+
+            cycleGroup.Text = "챔피언 리롤 방식";
+            cycleGroup.Font = new Font("맑은 고딕", 10F, FontStyle.Bold);
+            cycleGroup.SetBounds(20, 80, 770, 130);
+            fixedChampion.Text = "왼쪽 → 오른쪽 왕복 (현재 챔피언 유지)";
+            fixedChampion.Font = new Font("맑은 고딕", 10F, FontStyle.Regular);
+            fixedChampion.SetBounds(20, 32, 720, 34);
+            fixedChampion.Checked = true;
+            rotateChampions.Text = "오른쪽만 반복 (챔피언 종류 계속 변경)";
+            rotateChampions.Font = new Font("맑은 고딕", 10F, FontStyle.Regular);
+            rotateChampions.SetBounds(20, 76, 720, 34);
+
+            stopGroup.Text = "발견 후 동작";
+            stopGroup.Font = new Font("맑은 고딕", 10F, FontStyle.Bold);
+            stopGroup.SetBounds(20, 225, 770, 165);
+            stopFirst.Text = "챔피언 또는 일반 용병 중 하나라도 발견하면 전체 종료";
+            stopFirst.Font = new Font("맑은 고딕", 10F, FontStyle.Regular);
+            stopFirst.SetBounds(20, 32, 730, 42);
+            stopFirst.Checked = true;
+            stopAll.Text = "발견된 쪽만 고정하고 나머지를 계속 탐색";
+            stopAll.Font = new Font("맑은 고딕", 10F, FontStyle.Regular);
+            stopAll.SetBounds(20, 94, 730, 42);
+
+            expectedTime.Font = new Font("맑은 고딕", 10.5F, FontStyle.Bold);
+            expectedTime.TextAlign = ContentAlignment.MiddleCenter;
+            expectedTime.BorderStyle = BorderStyle.FixedSingle;
+            expectedTime.BackColor = Color.FromArgb(247, 247, 247);
+            expectedTime.SetBounds(45, 565, 810, 72);
+
+            cycleGroup.Controls.Add(fixedChampion);
+            cycleGroup.Controls.Add(rotateChampions);
+            stopGroup.Controls.Add(stopFirst);
+            stopGroup.Controls.Add(stopAll);
+
+            championGroup.Controls.Add(searchA);
+            championGroup.Controls.Add(searchB);
+            championGroup.Controls.Add(cycleGroup);
+            championGroup.Controls.Add(stopGroup);
+
+            Action updateChampionControls = delegate
+            {
+                championGroup.Enabled = champion.Checked;
+                cycleGroup.Enabled = searchA.Checked;
+                stopGroup.Enabled = searchA.Checked && searchB.Checked;
+                expectedTime.Text = GetExpectedTimeText(
+                    champion.Checked,
+                    searchA.Checked,
+                    searchB.Checked,
+                    fixedChampion.Checked,
+                    stopAll.Checked);
+            };
+            normal.CheckedChanged += delegate { updateChampionControls(); };
+            champion.CheckedChanged += delegate { updateChampionControls(); };
+            searchA.CheckedChanged += delegate { updateChampionControls(); };
+            searchB.CheckedChanged += delegate { updateChampionControls(); };
+            fixedChampion.CheckedChanged += delegate { updateChampionControls(); };
+            rotateChampions.CheckedChanged += delegate { updateChampionControls(); };
+            stopFirst.CheckedChanged += delegate { updateChampionControls(); };
+            stopAll.CheckedChanged += delegate { updateChampionControls(); };
+            updateChampionControls();
+
+            start.Text = "설정 완료";
+            start.Font = new Font("맑은 고딕", 11F, FontStyle.Bold);
+            start.SetBounds(295, 655, 150, 52);
+            start.DialogResult = DialogResult.OK;
+            cancel.Text = "취소";
+            cancel.Font = new Font("맑은 고딕", 11F);
+            cancel.SetBounds(460, 655, 150, 52);
+            cancel.DialogResult = DialogResult.Cancel;
+
+            form.Controls.Add(title);
+            form.Controls.Add(normal);
+            form.Controls.Add(champion);
+            form.Controls.Add(championGroup);
+            form.Controls.Add(expectedTime);
+            form.Controls.Add(start);
+            form.Controls.Add(cancel);
+            form.AcceptButton = start;
+            form.CancelButton = cancel;
+
+            start.Click += delegate
+            {
+                if (champion.Checked && !searchA.Checked && !searchB.Checked)
+                {
+                    MessageBox.Show(form, "챔피언 또는 일반 용병 중 하나 이상을 선택하세요.", "설정 확인", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    form.DialogResult = DialogResult.None;
+                }
+            };
+
+            if (form.ShowDialog() != DialogResult.OK) return false;
+            Options.Mode = champion.Checked ? GameMode.Champion : GameMode.Normal;
+            Options.SearchChampion = searchA.Checked;
+            Options.SearchMercenaries = searchB.Checked;
+            Options.ChampionMode = fixedChampion.Checked ? ChampionRerollMode.FixedChampion : ChampionRerollMode.RotateChampions;
+            Options.StopMode = stopFirst.Checked ? ChampionStopMode.FirstFound : ChampionStopMode.CompleteSelected;
+            return true;
+        }
+    }
+
+    private static string GetExpectedTimeText(bool championMode, bool searchChampion, bool searchMercenaries, bool fixedChampion, bool completeSelected)
+    {
+        const double shinyChance = 1.0 / 5000.0;
+        const double normalChecksPerSecond = 3.37;
+        const double rotatingChampionChecksPerSecond = 6.23;
+        const double mercenaryChecksPerSecond = 4.84;
+        const double rotatingBothChecksPerSecond = 3.98;
+
+        double mercenaryChance = 1.0 - Math.Pow(1.0 - shinyChance, 2.0);
+        double anyThreeChance = 1.0 - Math.Pow(1.0 - shinyChance, 3.0);
+        double seconds;
+
+        if (!championMode)
+        {
+            seconds = 1.0 / (anyThreeChance * normalChecksPerSecond);
+            return "현재 설정 기대시간: 평균 약 " + FormatExpectedDuration(seconds) +
+                "\r\n샤이니 확률 1/5000 · 최근 실측 속도 기준";
+        }
+
+        if (!searchChampion && !searchMercenaries)
+            return "탐색 대상을 하나 이상 선택하세요.";
+
+        double championChecksPerSecond = fixedChampion
+            ? rotatingChampionChecksPerSecond / 2.0
+            : rotatingChampionChecksPerSecond;
+        double bothChecksPerSecond = fixedChampion
+            ? 1.0 / (1.0 / rotatingChampionChecksPerSecond + 1.0 / rotatingBothChecksPerSecond)
+            : rotatingBothChecksPerSecond;
+
+        if (searchChampion && !searchMercenaries)
+            seconds = 1.0 / (shinyChance * championChecksPerSecond);
+        else if (!searchChampion && searchMercenaries)
+            seconds = 1.0 / (mercenaryChance * mercenaryChecksPerSecond);
+        else if (!completeSelected)
+            seconds = 1.0 / (anyThreeChance * bothChecksPerSecond);
+        else
+        {
+            // 두 쪽을 모두 찾는 동안에는 먼저 발견된 쪽을 고정한다. 첫 발견까지의
+            // 동시 탐색 시간과, 이후 남은 한쪽의 단독 탐색 시간을 함께 계산한다.
+            double championOnlyFirst = shinyChance * (1.0 - mercenaryChance);
+            double mercenaryOnlyFirst = (1.0 - shinyChance) * mercenaryChance;
+            seconds = 1.0 / (anyThreeChance * bothChecksPerSecond);
+            seconds += (championOnlyFirst / anyThreeChance) *
+                (1.0 / (mercenaryChance * mercenaryChecksPerSecond));
+            seconds += (mercenaryOnlyFirst / anyThreeChance) *
+                (1.0 / (shinyChance * championChecksPerSecond));
+        }
+
+        return "현재 설정 기대시간: 평균 약 " + FormatExpectedDuration(seconds) +
+            "\r\n샤이니 확률 1/5000 · 최근 실측/추정 속도 기준";
+    }
+
+    private static string FormatExpectedDuration(double seconds)
+    {
+        int totalSeconds = Math.Max(0, (int)Math.Round(seconds));
+        int hours = totalSeconds / 3600;
+        int minutes = (totalSeconds % 3600) / 60;
+        int remainingSeconds = totalSeconds % 60;
+        if (hours > 0) return string.Format("{0}시간 {1}분", hours, minutes);
+        return string.Format("{0}분 {1:00}초", minutes, remainingSeconds);
+    }
+
     private static void Start()
     {
         if (running) return;
@@ -199,6 +463,12 @@ internal static class EslabongShinyReroll
     }
 
     private static void RerollLoop(IntPtr hwnd)
+    {
+        if (Options.Mode == GameMode.Champion) ChampionRerollLoop(hwnd);
+        else NormalRerollLoop(hwnd);
+    }
+
+    private static void NormalRerollLoop(IntPtr hwnd)
     {
         int rolls = 0;
         DateTime runStarted = DateTime.UtcNow;
@@ -230,11 +500,9 @@ internal static class EslabongShinyReroll
 
                     byte[][] previousSlots = SplitThree(MakeScreenSignatureFromRegion(secondFrame.Image, secondFrame.ClientWidth, secondFrame.ClientHeight, secondFrame.Roi.X, secondFrame.Roi.Y));
                     byte[][] previousNames = SplitThree(MakeNameSignatureFromRegion(secondFrame.Image, secondFrame.ClientWidth, secondFrame.ClientHeight, secondFrame.Roi.X, secondFrame.Roi.Y));
-                    keybd_event((byte)VkR, 0, 0, UIntPtr.Zero);
-                    Thread.Sleep(14);
-                    keybd_event((byte)VkR, 0, KeyUp, UIntPtr.Zero);
+                    PressGameKey(VkR);
                     rolls++;
-                    pendingFrame = WaitForChangedFrame(hwnd, previousSlots, previousNames, 2500);
+                    pendingFrame = WaitForChangedFrame(hwnd, previousSlots, previousNames, new bool[] { true, true, true }, 2500, 120, 2);
                 }
             }
             if (rolls % 25 == 0)
@@ -244,6 +512,217 @@ internal static class EslabongShinyReroll
             }
         }
         if (pendingFrame != null) pendingFrame.Dispose();
+    }
+
+    private static void ChampionRerollLoop(IntPtr hwnd)
+    {
+        int rolls = 0;
+        int championRolls = 0;
+        int mercenaryRolls = 0;
+        bool championFound = !Options.SearchChampion;
+        bool mercenaryFound = !Options.SearchMercenaries;
+        FoundResult championResult = null;
+        FoundResult mercenaryResult = null;
+        FoundResult lastFound = null;
+        DateTime runStarted = DateTime.UtcNow;
+        FrameSample pendingFrame = null;
+        Console.WriteLine("[{0:T}] 챔피언 모드 탐색을 시작했습니다.", DateTime.Now);
+
+        while (running && !exiting)
+        {
+            if (GetForegroundWindow() != hwnd)
+            {
+                Stop("게임 창이 전면이 아닙니다.");
+                break;
+            }
+
+            using (FrameSample shot = pendingFrame ?? CapturePollingSample(hwnd))
+            {
+                pendingFrame = null;
+                if (shot == null || shot.Image == null) { Stop("게임 화면 캡처에 실패했습니다."); break; }
+                RememberRecentFrame(shot, rolls);
+
+                // 같은 완성 화면을 짧은 간격으로 두 번 검사한다. 챔피언의 상하 이동이나
+                // 표식 애니메이션 때문에 한 프레임에서만 흐려지는 경우를 보완한다.
+                for (int pass = 0; pass < 2 && running; pass++)
+                {
+                    FrameSample inspect = shot;
+                    FrameSample second = null;
+                    if (pass == 1)
+                    {
+                        Thread.Sleep(8);
+                        second = CapturePollingSample(hwnd);
+                        inspect = second;
+                    }
+                    try
+                    {
+                        if (inspect == null || inspect.Image == null) continue;
+                        bool[] active = { !championFound, !mercenaryFound, !mercenaryFound };
+                        FoundResult found;
+                        while (TryFindShinySample(hwnd, inspect, rolls, DateTime.UtcNow - runStarted, active, out found))
+                        {
+                            lastFound = found;
+                            bool isChampion = found.Slot == 1;
+                            found.Rolls = isChampion ? championRolls : mercenaryRolls;
+                            found.Elapsed = DateTime.UtcNow - runStarted;
+                            if (isChampion) { championFound = true; championResult = found; }
+                            else { mercenaryFound = true; mercenaryResult = found; }
+                            string side = isChampion ? "챔피언" : "일반 용병";
+                            Console.WriteLine("[{0:T}] {1} 샤이니 발견! 슬롯 {2}, 총 리롤 {3}회", DateTime.Now, side, found.Slot, rolls);
+                            StartFoundAlert();
+
+                            bool complete = championFound && mercenaryFound;
+                            if (Options.StopMode == ChampionStopMode.FirstFound || complete)
+                            {
+                                running = false;
+                                TimeSpan totalElapsed = DateTime.UtcNow - runStarted;
+                                if (complete && Options.SearchChampion && Options.SearchMercenaries && championResult != null && mercenaryResult != null)
+                                {
+                                    using (Bitmap championPreview = CreateSlotPreview(championResult.FoundPath, championResult.Slot))
+                                    using (Bitmap mercenaryPreview = CreateSlotPreview(mercenaryResult.FoundPath, mercenaryResult.Slot))
+                                        ShowCombinedFoundPopup(championResult, mercenaryResult, rolls, totalElapsed, championPreview, mercenaryPreview);
+                                }
+                                else
+                                {
+                                    using (Bitmap preview = CreateSlotPreview(found.FoundPath, found.Slot))
+                                        ShowFoundPopup(found.JobName, found.Slot, rolls, totalElapsed, preview);
+                                }
+                                return;
+                            }
+
+                            Console.WriteLine("[{0:T}] {1}은 고정하고, 아직 발견되지 않은 쪽만 계속 탐색합니다.", DateTime.Now, side);
+                            active[0] = !championFound;
+                            active[1] = active[2] = !mercenaryFound;
+                        }
+                    }
+                    finally { if (second != null) second.Dispose(); }
+                }
+
+                bool rerollChampion = !championFound;
+                bool rerollMercenaries = !mercenaryFound;
+                if (!rerollChampion && !rerollMercenaries)
+                {
+                    running = false;
+                    if (lastFound != null)
+                    {
+                        using (Bitmap preview = CreateSlotPreview(lastFound.FoundPath, lastFound.Slot))
+                            ShowFoundPopup(lastFound.JobName, lastFound.Slot, rolls, DateTime.UtcNow - runStarted, preview);
+                    }
+                    return;
+                }
+
+                byte[][] currentSlots = SplitThree(MakeScreenSignatureFromRegion(shot.Image, shot.ClientWidth, shot.ClientHeight, shot.Roi.X, shot.Roi.Y));
+                byte[][] currentNames = SplitThree(MakeNameSignatureFromRegion(shot.Image, shot.ClientWidth, shot.ClientHeight, shot.Roi.X, shot.Roi.Y));
+
+                if (rerollChampion && Options.ChampionMode == ChampionRerollMode.FixedChampion)
+                {
+                    // 왼쪽으로 다른 챔피언을 한 번 불러온 뒤 오른쪽으로 돌아오면
+                    // 원래 챔피언 종류는 유지하면서 샤이니 여부만 다시 추첨된다.
+                    PressGameKey(VkLeft);
+                    championRolls++;
+                    using (FrameSample away = WaitForChangedFrame(hwnd, currentSlots, currentNames, new bool[] { true, false, false }, 2500, 70, 1))
+                    {
+                        if (away == null || !running) break;
+                        byte[][] awaySlots = SplitThree(MakeScreenSignatureFromRegion(away.Image, away.ClientWidth, away.ClientHeight, away.Roi.X, away.Roi.Y));
+                        byte[][] awayNames = SplitThree(MakeNameSignatureFromRegion(away.Image, away.ClientWidth, away.ClientHeight, away.Roi.X, away.Roi.Y));
+                        PressGameKey(VkRight);
+                        if (rerollMercenaries) { PressGameKey(VkR); mercenaryRolls++; }
+                        int returnWaitMs = rerollMercenaries ? 90 : 70;
+                        pendingFrame = WaitForChangedFrame(hwnd, awaySlots, awayNames,
+                            new bool[] { true, rerollMercenaries, rerollMercenaries }, 2500, returnWaitMs, 1);
+                    }
+                }
+                else
+                {
+                    if (rerollChampion) { PressGameKey(VkRight); championRolls++; }
+                    if (rerollMercenaries) { PressGameKey(VkR); mercenaryRolls++; }
+                    int championWaitMs = rerollChampion && rerollMercenaries ? 90 : (rerollChampion ? 70 : 80);
+                    pendingFrame = WaitForChangedFrame(hwnd, currentSlots, currentNames,
+                        new bool[] { rerollChampion, rerollMercenaries, rerollMercenaries }, 2500, championWaitMs, 1);
+                }
+                rolls++;
+                if (pendingFrame == null && running) break;
+            }
+
+            if (rolls > 0 && rolls % 25 == 0)
+            {
+                double seconds = Math.Max(0.001, (DateTime.UtcNow - runStarted).TotalSeconds);
+                Console.WriteLine("[{0:T}] 총 {1}회 확인 중... 챔피언 {2}회 / 용병 {3}회 / 평균 {4:F1}회/초",
+                    DateTime.Now, rolls, championRolls, mercenaryRolls, rolls / seconds);
+            }
+        }
+        if (pendingFrame != null) pendingFrame.Dispose();
+    }
+
+    private static bool TryFindShinySample(IntPtr hwnd, FrameSample sample, int rolls, TimeSpan elapsed, bool[] activeSlots, out FoundResult result)
+    {
+        result = null;
+        Detection[] detections = AnalyzeRegionScreen(sample.Image, sample.ClientWidth, sample.ClientHeight, sample.Roi.X, sample.Roi.Y);
+        for (int i = 0; i < detections.Length; i++)
+        {
+            if (!activeSlots[i] || !detections[i].Found) continue;
+            if (!ConfirmCandidate(hwnd, i))
+            {
+                SaveCandidateEvidence(sample, rolls, i + 1, false);
+                Console.WriteLine("[{0:T}] 순간 후보 제외: 슬롯 {1}, 리롤 {2}회 (후속 3프레임에서 지속되지 않음)", DateTime.Now, i + 1, rolls);
+                continue;
+            }
+
+            SaveCandidateEvidence(sample, rolls, i + 1, true);
+            string foundPath = null;
+            using (Bitmap fullScreen = CaptureClient(hwnd))
+            {
+                if (fullScreen != null) foundPath = SaveFoundScreenshot(fullScreen, rolls, i + 1);
+                else
+                {
+                    string foundDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "found");
+                    Directory.CreateDirectory(foundDirectory);
+                    foundPath = Path.Combine(foundDirectory, string.Format("shiny_crop_roll{0}_slot{1}.png", rolls, i + 1));
+                    sample.Image.Save(foundPath, ImageFormat.Png);
+                }
+            }
+            result = new FoundResult
+            {
+                Slot = i + 1,
+                JobName = TryReadJobName(foundPath, i + 1),
+                FoundPath = foundPath
+            };
+            return true;
+        }
+        return false;
+    }
+
+    private static void PressGameKey(uint key)
+    {
+        keybd_event((byte)key, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(14);
+        keybd_event((byte)key, 0, KeyUp, UIntPtr.Zero);
+    }
+
+    private static void StartFoundAlert()
+    {
+        // 결과 팝업은 즉시 보여 주고, 알림음은 별도 스레드에서 약 5초간 재생한다.
+        // 여러 슬롯을 같은 화면에서 연달아 발견해도 알림 스레드가 겹치지 않게 한다.
+        if (Interlocked.CompareExchange(ref alertPlaying, 1, 0) != 0) return;
+        Thread alert = new Thread(new ThreadStart(delegate
+        {
+            try
+            {
+                for (int repeat = 0; repeat < 4; repeat++)
+                {
+                    System.Media.SystemSounds.Exclamation.Play();
+                    Beep(950, 260);
+                    Thread.Sleep(90);
+                    Beep(1450, 320);
+                    Thread.Sleep(90);
+                    Beep(2050, 460);
+                    if (repeat < 3) Thread.Sleep(180);
+                }
+            }
+            finally { Interlocked.Exchange(ref alertPlaying, 0); }
+        }));
+        alert.IsBackground = true;
+        alert.Start();
     }
 
     private static bool StopIfShinySample(IntPtr hwnd, FrameSample sample, int rolls, TimeSpan elapsed)
@@ -274,7 +753,7 @@ internal static class EslabongShinyReroll
                 }
             }
             string jobName = TryReadJobName(foundPath, i + 1);
-            Beep(1200, 250); Beep(1600, 350); Beep(2000, 500);
+            StartFoundAlert();
             using (Bitmap preview = CreateSlotPreview(foundPath, i + 1))
                 ShowFoundPopup(jobName, i + 1, rolls, elapsed, preview);
             return true;
@@ -300,9 +779,7 @@ internal static class EslabongShinyReroll
 
     private static void ShowFoundPopup(string jobName, int slot, int rolls, TimeSpan elapsed, Bitmap preview)
     {
-        string elapsedText = elapsed.TotalHours >= 1
-            ? string.Format("{0}시간 {1:D2}분 {2:D2}초", (int)elapsed.TotalHours, elapsed.Minutes, elapsed.Seconds)
-            : string.Format("{0}분 {1:D2}초", (int)elapsed.TotalMinutes, elapsed.Seconds);
+        string elapsedText = FormatElapsed(elapsed);
         string headline = string.IsNullOrWhiteSpace(jobName)
             ? string.Format("샤이니 {0}번 슬롯 발견!", slot)
             : string.Format("샤이니 {0} 발견!", jobName.Trim());
@@ -344,6 +821,93 @@ internal static class EslabongShinyReroll
             {
                 // 전체 화면 게임이 직전에 전면 창이었더라도 결과창을 최상단에 고정하고
                 // 키보드 포커스까지 결과창으로 가져온다.
+                form.TopMost = true;
+                SetWindowPos(form.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
+                form.BringToFront();
+                form.Activate();
+                SetForegroundWindow(form.Handle);
+            };
+            form.ShowDialog();
+        }
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed)
+    {
+        return elapsed.TotalHours >= 1
+            ? string.Format("{0}시간 {1:D2}분 {2:D2}초", (int)elapsed.TotalHours, elapsed.Minutes, elapsed.Seconds)
+            : string.Format("{0}분 {1:D2}초", (int)elapsed.TotalMinutes, elapsed.Seconds);
+    }
+
+    private static void ShowCombinedFoundPopup(FoundResult champion, FoundResult mercenary, int totalRolls, TimeSpan totalElapsed, Bitmap championPreview, Bitmap mercenaryPreview)
+    {
+        string championName = string.IsNullOrWhiteSpace(champion.JobName) ? "챔피언" : champion.JobName.Trim();
+        string mercenaryName = string.IsNullOrWhiteSpace(mercenary.JobName) ? "일반 용병" : mercenary.JobName.Trim();
+
+        using (Form form = new Form())
+        using (PictureBox championPicture = new PictureBox())
+        using (PictureBox mercenaryPicture = new PictureBox())
+        using (Label title = new Label())
+        using (Label championStats = new Label())
+        using (Label mercenaryStats = new Label())
+        using (Label totalStats = new Label())
+        using (Button button = new Button())
+        {
+            form.Text = "Eslabong 샤이니 2종 발견";
+            form.ClientSize = new Size(1120, 820);
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.MaximizeBox = false;
+            form.MinimizeBox = false;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            form.TopMost = true;
+            form.AutoScaleMode = AutoScaleMode.None;
+
+            title.Text = "챔피언과 일반 용병 샤이니를 모두 발견했습니다!";
+            title.Font = new Font("맑은 고딕", 18F, FontStyle.Bold);
+            title.TextAlign = ContentAlignment.MiddleCenter;
+            title.SetBounds(50, 15, 1020, 55);
+
+            championPicture.Image = championPreview;
+            championPicture.SizeMode = PictureBoxSizeMode.Zoom;
+            championPicture.BackColor = Color.FromArgb(29, 17, 12);
+            championPicture.SetBounds(70, 85, 430, 330);
+
+            mercenaryPicture.Image = mercenaryPreview;
+            mercenaryPicture.SizeMode = PictureBoxSizeMode.Zoom;
+            mercenaryPicture.BackColor = Color.FromArgb(29, 17, 12);
+            mercenaryPicture.SetBounds(620, 85, 430, 330);
+
+            championStats.Text = string.Format("샤이니 {0} 발견!\r\n구분: 챔피언\r\n리롤 횟수: {1:N0}회\r\n발견 시점: {2}",
+                championName, champion.Rolls, FormatElapsed(champion.Elapsed));
+            championStats.Font = new Font("맑은 고딕", 14F, FontStyle.Regular);
+            championStats.TextAlign = ContentAlignment.MiddleCenter;
+            championStats.SetBounds(45, 430, 480, 165);
+
+            mercenaryStats.Text = string.Format("샤이니 {0} 발견!\r\n구분: 일반 용병 ({1}번 슬롯)\r\n리롤 횟수: {2:N0}회\r\n발견 시점: {3}",
+                mercenaryName, mercenary.Slot, mercenary.Rolls, FormatElapsed(mercenary.Elapsed));
+            mercenaryStats.Font = new Font("맑은 고딕", 14F, FontStyle.Regular);
+            mercenaryStats.TextAlign = ContentAlignment.MiddleCenter;
+            mercenaryStats.SetBounds(595, 430, 480, 165);
+
+            totalStats.Text = string.Format("전체 통계  |  총 검사 횟수: {0:N0}회  |  전체 소요 시간: {1}", totalRolls, FormatElapsed(totalElapsed));
+            totalStats.Font = new Font("맑은 고딕", 14F, FontStyle.Bold);
+            totalStats.TextAlign = ContentAlignment.MiddleCenter;
+            totalStats.SetBounds(100, 620, 920, 55);
+
+            button.Text = "이제 겜하러 가기";
+            button.Font = new Font("맑은 고딕", 12F, FontStyle.Bold);
+            button.SetBounds(435, 720, 250, 58);
+            button.DialogResult = DialogResult.OK;
+
+            form.Controls.Add(title);
+            form.Controls.Add(championPicture);
+            form.Controls.Add(mercenaryPicture);
+            form.Controls.Add(championStats);
+            form.Controls.Add(mercenaryStats);
+            form.Controls.Add(totalStats);
+            form.Controls.Add(button);
+            form.AcceptButton = button;
+            form.Shown += delegate
+            {
                 form.TopMost = true;
                 SetWindowPos(form.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
                 form.BringToFront();
@@ -466,16 +1030,17 @@ $result = Await-Operation ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.
 $result.Text
 ";
 
-    private static FrameSample WaitForChangedFrame(IntPtr hwnd, byte[][] previousSlots, byte[][] previousNames, int timeoutMs)
+    private static FrameSample WaitForChangedFrame(IntPtr hwnd, byte[][] previousSlots, byte[][] previousNames, bool[] requiredSlots, int timeoutMs, int minimumWaitMs = 150, int requiredReadyStreak = 2)
     {
-        DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        DateTime softDeadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        DateTime hardDeadline = DateTime.UtcNow.AddMilliseconds(Math.Max(6000, timeoutMs + 3500));
         Bitmap latest = null;
         bool[] sawLoading = { false, false, false };
         double[] maxSlotChange = { 0, 0, 0 };
         double[] maxNameChange = { 0, 0, 0 };
         int readyStreak = 0;
         DateTime waitStarted = DateTime.UtcNow;
-        while (running && DateTime.UtcNow < deadline)
+        while (running && DateTime.UtcNow < hardDeadline)
         {
             Thread.Sleep(6);
             int clientWidth, clientHeight;
@@ -490,6 +1055,7 @@ $result.Text
             bool allTransitioned = true;
             for (int i = 0; i < 3; i++)
             {
+                if (!requiredSlots[i]) continue;
                 if (brightCounts[i] < requiredCounts[i]) sawLoading[i] = true;
                 if (brightCounts[i] < requiredCounts[i]) allNamesReady = false;
                 maxSlotChange[i] = Math.Max(maxSlotChange[i], ChangedPixelFraction(previousSlots[i], currentSlots[i]));
@@ -500,13 +1066,25 @@ $result.Text
                 if (!transitioned) allTransitioned = false;
             }
             double waitedMs = (DateTime.UtcNow - waitStarted).TotalMilliseconds;
-            // TURBO: 세 슬롯 변화와 완성된 직업명이 연속 두 프레임 확인되면
-            // 0.15초 이후 즉시 진행한다. 늦은 로딩은 기존처럼 0.4초까지 기다린다.
-            if (allTransitioned && allNamesReady && waitedMs >= 150) readyStreak++;
+            // 모드별 최소 대기 뒤 완성된 직업명이 필요한 프레임 수만큼 확인되면
+            // 즉시 진행한다. 늦은 로딩은 기존처럼 0.4초까지 기다린다.
+            if (allTransitioned && allNamesReady && waitedMs >= minimumWaitMs) readyStreak++;
             else readyStreak = 0;
-            bool turboReady = readyStreak >= 2 || (allTransitioned && waitedMs >= 400);
+            // 0.4초가 지났더라도 직업명이 아직 어두운 로딩 상태면 절대 넘기지 않는다.
+            // 특히 일반 모드 3번 슬롯이 늦게 뜨는 경우의 미탐을 막는다.
+            bool turboReady = allNamesReady &&
+                (readyStreak >= requiredReadyStreak || (allTransitioned && waitedMs >= 400));
             if (turboReady)
             {
+                if (latest != null) latest.Dispose();
+                return new FrameSample { Image = frame, ClientWidth = clientWidth, ClientHeight = clientHeight, Roi = pollingRoi };
+            }
+            // 수천 회 반복 중 드물게 어두운 로딩 프레임이나 변화 신호를 캡처하지
+            // 못할 수 있다. 선택 슬롯의 직업명이 이미 모두 밝다면 완성 화면이므로,
+            // 2.5초 뒤에는 정지하지 않고 이 화면으로 안전하게 복구한다.
+            if (allNamesReady && DateTime.UtcNow >= softDeadline)
+            {
+                Console.WriteLine("[{0:T}] 화면 전환 신호를 놓쳤지만 선택 슬롯 로드는 완료되어 자동 복구합니다.", DateTime.Now);
                 if (latest != null) latest.Dispose();
                 return new FrameSample { Image = frame, ClientWidth = clientWidth, ClientHeight = clientHeight, Roi = pollingRoi };
             }
@@ -514,7 +1092,7 @@ $result.Text
             latest = frame;
         }
         if (latest != null) latest.Dispose();
-        if (running) Stop("1·2·3번 슬롯이 2.5초 안에 모두 로드되지 않아 안전 중지했습니다.");
+        if (running) Stop("선택한 슬롯이 6초 안에도 로드되지 않아 안전 중지했습니다.");
         return null;
     }
 
@@ -1065,6 +1643,24 @@ $result.Text
                 Console.WriteLine("slot{0}: found={1}, score={2:F3}, bright_color={3:F3}, character={4}, marker={5}", i + 1, d.Found, d.Score, d.BrightColorFraction, character, marker);
             }
             return 0;
+        }
+    }
+
+    private static int AnalyzeRegionFile(string path, int clientWidth, int clientHeight, int originX, int originY)
+    {
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        if (!File.Exists(path)) { Console.WriteLine("파일이 없습니다: " + path); return 2; }
+        using (Bitmap image = new Bitmap(path))
+        {
+            Detection[] detections = AnalyzeRegionScreen(image, clientWidth, clientHeight, originX, originY);
+            bool any = false;
+            for (int i = 0; i < detections.Length; i++)
+            {
+                Detection d = detections[i];
+                any |= d.Found;
+                Console.WriteLine("slot{0}: found={1}, score={2:F3}, bright_color={3:F3}", i + 1, d.Found, d.Score, d.BrightColorFraction);
+            }
+            return any ? 0 : 1;
         }
     }
 
